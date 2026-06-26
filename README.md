@@ -97,6 +97,30 @@ uv run python main.py
 uv run python main.py daily
 ```
 
+## MCP 服务
+
+源码运行时可以启动 MCP 服务，让支持 MCP 的 AI 客户端通过截图、OCR、鼠标和键盘工具接入小助手：
+
+```cmd
+uv run python mcp_server.py
+```
+
+常见 MCP 客户端可配置为：
+
+```json
+{
+  "mcpServers": {
+    "march7th-assistant": {
+      "command": "uv",
+      "args": ["run", "python", "mcp_server.py"],
+      "cwd": "你的 March7thAssistant 目录"
+    }
+  }
+}
+```
+
+默认坐标模式为最近一次截图的像素坐标：先调用 `capture_screen` 观察画面，再用 `mouse_click`、`press_key` 等工具执行动作。也可以使用 `ocr_screen`、`find_text`、`find_image`、`click_text`、`click_image` 辅助定位。
+
 <details>
 <summary>开发相关</summary>
 
