@@ -95,6 +95,110 @@ def _window_region() -> tuple[int, int, int, int]:
     return Screenshot.get_window_region(window)
 
 
+def _is_admin() -> bool:
+    if sys.platform != "win32":
+        return os.geteuid() == 0 if hasattr(os, "geteuid") else False
+    try:
+        import ctypes
+
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        return False
+
+
+def _foreground_window_info() -> dict[str, Any] | None:
+    if sys.platform != "win32":
+        return None
+    try:
+        import win32gui
+        import win32process
+
+        hwnd = win32gui.GetForegroundWindow()
+        _, pid = win32process.GetWindowThreadProcessId(hwnd)
+        return {
+            "hwnd": hwnd,
+            "pid": pid,
+            "title": win32gui.GetWindowText(hwnd),
+        }
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+def _game_hwnd_from_process() -> int | None:
+    if sys.platform != "win32":
+        return None
+    try:
+        import psutil
+        import win32gui
+        import win32process
+
+        modules = _load_project_modules()
+        cfg = modules["cfg"]
+        process_name = str(cfg.get_value("game_process_name", "StarRail.exe") or "StarRail.exe").lower()
+        process_stem = process_name.removesuffix(".exe")
+        title = str(cfg.get_value("game_title_name", "") or "")
+        title_matches: list[int] = []
+
+        def enum_title_window(hwnd: int, _: Any) -> None:
+            if win32gui.IsWindowVisible(hwnd) and title and win32gui.GetWindowText(hwnd) == title:
+                title_matches.append(hwnd)
+
+        win32gui.EnumWindows(enum_title_window, None)
+        candidate_pids = {
+            proc.info["pid"]
+            for proc in psutil.process_iter(attrs=["pid", "name"])
+            if str(proc.info.get("name") or "").lower() in {process_name, process_stem}
+        }
+        if not candidate_pids:
+            return title_matches[0] if title_matches else None
+
+        matches: list[int] = []
+
+        def enum_window(hwnd: int, _: Any) -> None:
+            if not win32gui.IsWindowVisible(hwnd):
+                return
+            _, pid = win32process.GetWindowThreadProcessId(hwnd)
+            if pid in candidate_pids and (not title or win32gui.GetWindowText(hwnd) == title):
+                matches.append(hwnd)
+
+        win32gui.EnumWindows(enum_window, None)
+        return matches[0] if matches else (title_matches[0] if title_matches else None)
+    except Exception:
+        return None
+
+
+def _focus_game_window() -> dict[str, Any]:
+    if sys.platform != "win32":
+        raise RuntimeError("focus_game is only supported on Windows")
+
+    import win32con
+    import win32gui
+    import win32process
+
+    hwnd = _game_hwnd_from_process()
+    if hwnd is None:
+        modules = _load_project_modules()
+        cfg = modules["cfg"]
+        Screenshot = modules["Screenshot"]
+        window = Screenshot.get_window(cfg.get_value("game_title_name"))
+        hwnd = getattr(window, "_hWnd", None) if window else None
+
+    if not hwnd:
+        raise RuntimeError("Game window not found")
+
+    win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+    win32gui.SetForegroundWindow(hwnd)
+    _, pid = win32process.GetWindowThreadProcessId(hwnd)
+    return {
+        "ok": True,
+        "hwnd": hwnd,
+        "pid": pid,
+        "title": win32gui.GetWindowText(hwnd),
+        "rect": win32gui.GetWindowRect(hwnd),
+        "foreground": _foreground_window_info(),
+    }
+
+
 def _to_absolute_xy(x: float, y: float, coordinate_mode: CoordinateMode) -> tuple[int, int]:
     auto = _ensure_screenshot()
     mode = coordinate_mode
@@ -212,6 +316,38 @@ def create_server(host: str = "127.0.0.1", port: int = 8000, log_level: str = "W
             }
 
     @mcp.tool()
+    def get_input_diagnostics() -> dict[str, Any]:
+        """Return input-related diagnostics: admin status, foreground window, DPI, and game hwnd."""
+        diagnostics: dict[str, Any] = {
+            "is_admin": _is_admin(),
+            "foreground": _foreground_window_info(),
+            "game_hwnd": _game_hwnd_from_process(),
+        }
+        modules = _load_project_modules()
+        diagnostics["game_process_name"] = modules["cfg"].get_value("game_process_name", None)
+        diagnostics["game_title_name"] = modules["cfg"].get_value("game_title_name", None)
+        if sys.platform == "win32":
+            try:
+                import ctypes
+                import pyautogui
+                import win32gui
+
+                diagnostics["screen_size"] = tuple(pyautogui.size())
+                diagnostics["mouse_position"] = tuple(pyautogui.position())
+                diagnostics["system_dpi"] = ctypes.windll.user32.GetDpiForSystem()
+                if diagnostics["game_hwnd"]:
+                    diagnostics["game_window_rect"] = win32gui.GetWindowRect(diagnostics["game_hwnd"])
+            except Exception as exc:
+                diagnostics["input_error"] = str(exc)
+        return diagnostics
+
+    @mcp.tool()
+    def focus_game() -> dict[str, Any]:
+        """Bring the game window to the foreground before sending local mouse or keyboard input."""
+        with _AUTOMATION_LOCK:
+            return _focus_game_window()
+
+    @mcp.tool()
     def capture_screen(
         crop_x: float = 0.0,
         crop_y: float = 0.0,
@@ -303,13 +439,37 @@ def create_server(host: str = "127.0.0.1", port: int = 8000, log_level: str = "W
             modules = _load_project_modules()
             auto = modules["auto"]
             abs_x, abs_y = _to_absolute_xy(x, y, coordinate_mode)
-            if press_duration > 0:
-                auto.mouse_down(abs_x, abs_y)
-                time.sleep(float(press_duration))
-                auto.mouse_up()
+
+            before = None
+            after = None
+            err = None
+            try:
+                import pyautogui
+
+                before = tuple(pyautogui.position())
+                if press_duration > 0:
+                    pyautogui.mouseDown(abs_x, abs_y)
+                    time.sleep(float(press_duration))
+                    pyautogui.mouseUp()
+                else:
+                    pyautogui.click(abs_x, abs_y)
+                after = tuple(pyautogui.position())
+            except Exception as exc:
+                err = f"{type(exc).__name__}: {exc}"
+
+            result: dict[str, Any] = {
+                "ok": err is None,
+                "x": abs_x,
+                "y": abs_y,
+                "cursor_before": before,
+                "cursor_after": after,
+            }
+            if err is not None:
+                result["error"] = err
             else:
-                auto.mouse_click(abs_x, abs_y)
-            return {"ok": True, "x": abs_x, "y": abs_y}
+                moved = after is not None and tuple(after[:2]) == (abs_x, abs_y)
+                result["cursor_moved_to_target"] = bool(moved)
+            return result
 
     @mcp.tool()
     def mouse_move(x: float, y: float, coordinate_mode: CoordinateMode = "screenshot") -> dict[str, Any]:
@@ -495,16 +655,51 @@ def create_server(host: str = "127.0.0.1", port: int = 8000, log_level: str = "W
     return mcp
 
 
+def _print_http_endpoint(host: str, port: int, mount_path: str) -> None:
+    display_host = host
+    if display_host in ("0.0.0.0", "::"):
+        display_host = "127.0.0.1"
+    url = f"http://{display_host}:{port}{mount_path}"
+    line = "=" * 64
+    print(line, flush=True)
+    print("March7th Assistant MCP server (HTTP)", flush=True)
+    print("  Transport : streamable-http", flush=True)
+    print(f"  Endpoint  : {url}", flush=True)
+    if host in ("0.0.0.0", "::"):
+        print(f"  Listening : {host}:{port} (all interfaces)", flush=True)
+    print("  Configure your MCP client with this URL.", flush=True)
+    print(line, flush=True)
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="March7th Assistant MCP server")
-    parser.add_argument("--transport", choices=["stdio", "sse", "streamable-http"], default="stdio")
-    parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument(
+        "--transport",
+        choices=["stdio", "sse", "streamable-http"],
+        default="streamable-http",
+        help="Transport mode. Default: streamable-http (HTTP). Use stdio for Kilo/stdio clients.",
+    )
+    parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="Bind address for HTTP transports. Use 0.0.0.0 to allow remote access.",
+    )
+    parser.add_argument("--port", type=int, default=8000, help="HTTP listen port.")
+    parser.add_argument(
+        "--mount-path",
+        default="/mcp",
+        help="URL path for the streamable-http endpoint (default: /mcp).",
+    )
     parser.add_argument("--log-level", default="WARNING", choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"])
     args = parser.parse_args(argv)
 
     server = create_server(host=args.host, port=args.port, log_level=args.log_level)
-    server.run(args.transport)
+
+    if args.transport in ("streamable-http", "sse"):
+        _print_http_endpoint(args.host, args.port, args.mount_path)
+        server.run(args.transport, mount_path=args.mount_path)
+    else:
+        server.run(args.transport)
 
 
 if __name__ == "__main__":
