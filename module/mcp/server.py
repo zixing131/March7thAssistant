@@ -496,6 +496,108 @@ def create_server(host: str = "127.0.0.1", port: int = 8000, log_level: str = "W
             _load_project_modules()["auto"].mouse_up()
             return {"ok": True}
 
+    def _drag_absolute(
+        start_x: int,
+        start_y: int,
+        end_x: int,
+        end_y: int,
+        *,
+        duration: float = 0.35,
+        hold_before: float = 0.25,
+        hold_after: float = 0.15,
+        button: str = "left",
+    ) -> dict[str, Any]:
+        """Drag on screen using win32api (works best with admin privileges)."""
+        if sys.platform != "win32":
+            import pyautogui
+
+            pyautogui.moveTo(start_x, start_y)
+            time.sleep(hold_before)
+            pyautogui.mouseDown(button=button)
+            pyautogui.moveTo(end_x, end_y, duration=max(0.05, duration))
+            time.sleep(hold_after)
+            pyautogui.mouseUp(button=button)
+            return {"backend": "pyautogui"}
+
+        import win32api
+        import win32con
+
+        down_flag = win32con.MOUSEEVENTF_LEFTDOWN
+        up_flag = win32con.MOUSEEVENTF_LEFTUP
+        if button == "right":
+            down_flag = win32con.MOUSEEVENTF_RIGHTDOWN
+            up_flag = win32con.MOUSEEVENTF_RIGHTUP
+        elif button == "middle":
+            down_flag = win32con.MOUSEEVENTF_MIDDLEDOWN
+            up_flag = win32con.MOUSEEVENTF_MIDDLEUP
+
+        win32api.SetCursorPos((start_x, start_y))
+        time.sleep(max(0.0, hold_before))
+        win32api.mouse_event(down_flag, 0, 0, 0, 0)
+        steps = max(4, int(max(0.05, duration) / 0.02))
+        step_delay = max(0.05, duration) / steps
+        for step in range(1, steps + 1):
+            x = int(round(start_x + (end_x - start_x) * step / steps))
+            y = int(round(start_y + (end_y - start_y) * step / steps))
+            win32api.SetCursorPos((x, y))
+            time.sleep(step_delay)
+        time.sleep(max(0.0, hold_after))
+        win32api.mouse_event(up_flag, 0, 0, 0, 0)
+        return {"backend": "win32api", "steps": steps}
+
+    @mcp.tool()
+    def mouse_drag(
+        start_x: float,
+        start_y: float,
+        end_x: float,
+        end_y: float,
+        coordinate_mode: CoordinateMode = "screenshot",
+        duration: float = 0.35,
+        hold_before: float = 0.25,
+        hold_after: float = 0.15,
+        button: str = "left",
+        focus_first: bool = True,
+    ) -> dict[str, Any]:
+        """Drag from start to end. Coordinates default to pixels in the latest screenshot."""
+        with _AUTOMATION_LOCK:
+            _ensure_screenshot()
+            abs_start = _to_absolute_xy(start_x, start_y, coordinate_mode)
+            abs_end = _to_absolute_xy(end_x, end_y, coordinate_mode)
+            focus_result = None
+            if focus_first and sys.platform == "win32":
+                try:
+                    focus_result = _focus_game_window()
+                except Exception as exc:
+                    focus_result = {"ok": False, "error": str(exc)}
+
+            err = None
+            drag_meta: dict[str, Any] = {}
+            try:
+                drag_meta = _drag_absolute(
+                    abs_start[0],
+                    abs_start[1],
+                    abs_end[0],
+                    abs_end[1],
+                    duration=float(duration),
+                    hold_before=float(hold_before),
+                    hold_after=float(hold_after),
+                    button=button,
+                )
+            except Exception as exc:
+                err = f"{type(exc).__name__}: {exc}"
+
+            result: dict[str, Any] = {
+                "ok": err is None,
+                "start": {"x": abs_start[0], "y": abs_start[1]},
+                "end": {"x": abs_end[0], "y": abs_end[1]},
+                "is_admin": _is_admin(),
+                "focus": focus_result,
+                **drag_meta,
+            }
+            if err is not None:
+                result["error"] = err
+            return result
+
     @mcp.tool()
     def mouse_scroll(count: int, direction: int = -1, pause: bool = True) -> dict[str, Any]:
         """Scroll the mouse wheel. direction=-1 scrolls down, direction=1 scrolls up."""
