@@ -89,6 +89,7 @@ browser_mirror_urls:
 # 体力计划列表，每项包含副本类型、副本名称和剩余次数，例如：[["拟造花萼（金）", "回忆之蕾", 10], ["侵蚀隧洞", "睿治之径", 5]]
 power_enable: true # 是否启用清体力总开关。false 时完整运行和“日常”中的历战余响与清体力都会跳过，但单独执行“清体力”任务不受影响。
 power_plan: []
+power_plan_keep: false # 是否在执行后保留整份体力计划。true 保留，false 按剩余次数更新并删除已完成计划。
 instance_type: 拟造花萼（金） # 设置副本类型，可选值：拟造花萼（金）、拟造花萼（赤）、凝滞虚影、侵蚀隧洞、饰品提取。
 calyx_golden_preference: Jarilo-VI # 设置拟造花萼（金）偏好地区，可选值："雅利洛-VI"（Jarilo-VI）、仙舟「罗浮」（XianzhouLuofu）、匹诺康尼（Penacony）。
 instance_names:
@@ -555,6 +556,7 @@ notify_smtp_port: "" # SMTP 服务器端口，默认为 465。
 notify_smtp_ssl: true # 是否使用 SSL 连接 SMTP 服务器。默认为 True，可设置为 False 关闭。
 notify_smtp_starttls: false # 是否使用 SSL 连接 SMTP 服务器。默认为 False，可设置为 True 关闭。
 notify_smtp_ssl_unverified: false # 是否使用不经验证的 SSL 连接。默认为 False，可设置为 True 关闭。除非您使用自签名邮箱,否则不推荐启用。
+notify_smtp_plain_text: false # 是否以纯文本格式发送邮件。默认为 False（发送 HTML 格式）。true 开启后将以纯文本发送，适用于 Outlook 等将 HTML 邮件作为附件处理的邮箱。
 
 # OneBot 通知配置（QQ 机器人）
 # 已测试 NapCatQQ(https://github.com/NapNeko/NapCatQQ) 和 OpenShamrock(https://github.com/whitechi73/OpenShamrock) 可用
